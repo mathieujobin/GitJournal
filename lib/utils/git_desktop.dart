@@ -44,12 +44,33 @@ Future<void> gitPushViaExecutable({
   required String privateKey,
   required String privateKeyPassword,
   required String remoteName,
+  String? branchName,
+  bool setUpstream = false,
 }) =>
     _gitCommandViaExecutable(
       repoPath: repoPath,
       privateKey: privateKey,
       privateKeyPassword: privateKeyPassword,
-      args: ["push", remoteName],
+      args: [
+        "push",
+        if (setUpstream) "--set-upstream",
+        remoteName,
+        if (branchName != null) branchName,
+      ],
+    );
+
+Future<void> gitPullRebaseViaExecutable({
+  required String repoPath,
+  required String privateKey,
+  required String privateKeyPassword,
+  required String remoteName,
+  required String branchName,
+}) =>
+    _gitCommandViaExecutable(
+      repoPath: repoPath,
+      privateKey: privateKey,
+      privateKeyPassword: privateKeyPassword,
+      args: ["pull", "--rebase", remoteName, branchName],
     );
 
 Future<void> _gitCommandViaExecutable({
@@ -82,17 +103,18 @@ Future<void> _gitCommandViaExecutable({
   Log.d('env GIT_SSH_COMMAND="ssh -i ${temp.path} -o IdentitiesOnly=yes"');
   Log.d("git ${args.join(' ')}");
 
+  var stdoutFuture = process.stdout.transform(utf8.decoder).join();
+  var stderrFuture = process.stderr.transform(utf8.decoder).join();
   var exitCode = await process.exitCode;
+  var stdout = await stdoutFuture;
+  var stderr = await stderrFuture;
   await dir.delete(recursive: true);
 
-  var stdoutB = <int>[];
-  await for (var d in process.stdout) {
-    stdoutB.addAll(d);
-  }
-  var stdout = utf8.decode(stdoutB);
-
   if (exitCode != 0) {
-    var ex = Exception("Failed to fetch - $stdout - exitCode: $exitCode");
+    var output = stderr.isNotEmpty ? stderr : stdout;
+    var ex = Exception(
+      "Failed to run git ${args.join(' ')} - $output - exitCode: $exitCode",
+    );
     throw ex;
   }
 }

@@ -27,6 +27,41 @@ Future<void> main() async {
 
   setUpAll(gjSetupAllTests);
 
+  test('sanitize sync recovery branch component', () {
+    expect(
+      sanitizeSyncRecoveryBranchComponent(' ONEPLUS A5000 '),
+      'oneplus-a5000',
+    );
+    expect(
+      sanitizeSyncRecoveryBranchComponent('..iPhone/8,2..'),
+      'iphone-8-2',
+    );
+    expect(
+      sanitizeSyncRecoveryBranchComponent('feature.lock'),
+      'device',
+    );
+  });
+
+  test('build sync recovery branch base name', () {
+    var branchName = buildSyncRecoveryBranchBaseName(
+      DateTime(2026, 6, 15),
+      'ONEPLUS A5000',
+    );
+    expect(branchName, '2026-06-15-oneplus-a5000');
+  });
+
+  test('next unique sync recovery branch name appends suffix', () {
+    var branchName = nextUniqueSyncRecoveryBranchName(
+      '2026-06-15-oneplus-a5000',
+      [
+        'main',
+        '2026-06-15-oneplus-a5000',
+        '2026-06-15-oneplus-a5000-2',
+      ],
+    );
+    expect(branchName, '2026-06-15-oneplus-a5000-3');
+  });
+
   Future<void> _setup({
     GitHash? head,
     Map<String, Object> sharedPrefValues = const {},

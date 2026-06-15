@@ -161,7 +161,7 @@ class GitNoteRepository {
       } catch (ex) {
         rethrow;
       }
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       await gitFetchViaExecutable(
         privateKey: config.sshPrivateKey,
         privateKeyPassword: config.sshPassword,
@@ -205,6 +205,35 @@ class GitNoteRepository {
     return repo.mergeCurrentTrackingBranch(author: author);
   }
 
+  Future<void> recoverPushFailure() async {
+    var remoteName = 'origin';
+    if (Platform.isAndroid || Platform.isIOS) {
+      try {
+        var bindings = GitBindingsAsync();
+
+        // go_git_dart currently exposes pull() but not a true rebase API.
+        // The safest available fallback is another pull (fetch + merge),
+        // which preserves local changes but may create a merge commit.
+        await bindings.pull(remoteName, gitRepoPath,
+            utf8.encode(config.sshPrivateKey), config.sshPassword);
+      } catch (ex, stackTrace) {
+        Log.e("GitPull Failed", ex: ex, stacktrace: stackTrace);
+        rethrow;
+      }
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
+      var repo = await GitAsyncRepository.load(gitRepoPath);
+      var branchName = await repo.currentBranch();
+
+      return gitPullRebaseViaExecutable(
+        privateKey: config.sshPrivateKey,
+        privateKeyPassword: config.sshPassword,
+        remoteName: remoteName,
+        repoPath: gitRepoPath,
+        branchName: branchName,
+      );
+    }
+  }
+
   Future<void> push() async {
     // Only push if we have something we need to push
     try {
@@ -235,12 +264,31 @@ class GitNoteRepository {
         Log.e("GitPush Failed", ex: ex, stacktrace: stackTrace);
         rethrow;
       }
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       return await gitPushViaExecutable(
         privateKey: config.sshPrivateKey,
         privateKeyPassword: config.sshPassword,
         remoteName: remoteName,
         repoPath: gitRepoPath,
+      );
+    }
+  }
+
+  Future<void> pushBranch(
+    String branchName, {
+    bool setUpstream = false,
+  }) async {
+    var remoteName = 'origin';
+    if (Platform.isAndroid || Platform.isIOS) {
+      return push();
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
+      return gitPushViaExecutable(
+        privateKey: config.sshPrivateKey,
+        privateKeyPassword: config.sshPassword,
+        remoteName: remoteName,
+        repoPath: gitRepoPath,
+        branchName: branchName,
+        setUpstream: setUpstream,
       );
     }
   }
