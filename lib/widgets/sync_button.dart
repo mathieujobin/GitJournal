@@ -102,6 +102,34 @@ class _SyncButtonState extends State<SyncButton> {
     try {
       final repo = context.read<GitJournalRepo>();
       await repo.syncNotes();
+    } on SyncRecoveryFailedException catch (e) {
+      final repo = context.read<GitJournalRepo>();
+      final branchName = await showDialog<String>(
+        context: context,
+        builder: (context) => _SyncRecoveryDialog(
+          suggestedBranchName: e.suggestedBranchName,
+        ),
+      );
+      if (!mounted || branchName == null) {
+        return;
+      }
+
+      try {
+        final pushedBranch = await repo.pushCurrentStateToNewBranch(branchName);
+        if (!mounted) {
+          return;
+        }
+
+        showSnackbar(
+          context,
+          'Local notes were safely pushed to "$pushedBranch".',
+        );
+      } catch (pushError) {
+        if (!mounted) {
+          return;
+        }
+        showErrorSnackbar(context, pushError);
+      }
     } catch (e) {
       showErrorSnackbar(context, e);
     }
@@ -118,6 +146,82 @@ class _SyncButtonState extends State<SyncButton> {
       default:
         return Icons.cloud_done;
     }
+  }
+}
+
+class _SyncRecoveryDialog extends StatefulWidget {
+  final String suggestedBranchName;
+
+  const _SyncRecoveryDialog({
+    required this.suggestedBranchName,
+  });
+
+  @override
+  State<_SyncRecoveryDialog> createState() => _SyncRecoveryDialogState();
+}
+
+class _SyncRecoveryDialogState extends State<_SyncRecoveryDialog> {
+  late final TextEditingController _textController;
+  final _formKey = GlobalKey<FormState>();
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: widget.suggestedBranchName);
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Sync needs a recovery branch'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Automatic push recovery did not work. Your local changes are '
+              'still safe, and you can push them to a new branch instead.',
+            ),
+            const SizedBox(height: 12),
+            TextFormField(
+              controller: _textController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: 'Branch name',
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a branch name';
+                }
+                return null;
+              },
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () {
+            if (_formKey.currentState!.validate()) {
+              Navigator.of(context).pop(_textController.text.trim());
+            }
+          },
+          child: const Text('Push branch'),
+        ),
+      ],
+    );
   }
 }
 

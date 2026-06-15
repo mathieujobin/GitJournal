@@ -13,6 +13,7 @@ import 'package:dart_git/dart_git.dart';
 import 'package:dart_git/exceptions.dart';
 import 'package:dart_git/plumbing/git_hash.dart';
 import 'package:dart_git/plumbing/reference.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:gitjournal/analytics/analytics.dart';
@@ -41,6 +42,71 @@ import 'package:synchronized/synchronized.dart';
 import 'package:time/time.dart';
 import 'package:universal_io/io.dart' as io;
 import 'package:universal_io/io.dart' show Platform;
+
+Exception _asException(Object error) {
+  if (error is Exception) {
+    return error;
+  }
+  return Exception(error.toString());
+}
+
+@visibleForTesting
+String sanitizeSyncRecoveryBranchComponent(String value) {
+  var sanitized = value.trim().toLowerCase();
+  sanitized = sanitized.replaceAll(RegExp(r'[^a-z0-9._-]+'), '-');
+  sanitized = sanitized.replaceAll(RegExp(r'-{2,}'), '-');
+  sanitized = sanitized.replaceAll(RegExp(r'\.{2,}'), '.');
+  sanitized = sanitized.replaceAll(RegExp(r'^[.-]+|[.-]+$'), '');
+
+  if (sanitized.isEmpty || sanitized.endsWith('.lock')) {
+    return 'device';
+  }
+  return sanitized;
+}
+
+@visibleForTesting
+String buildSyncRecoveryBranchBaseName(DateTime now, String phoneModel) {
+  var year = now.year.toString().padLeft(4, '0');
+  var month = now.month.toString().padLeft(2, '0');
+  var day = now.day.toString().padLeft(2, '0');
+  var sanitizedModel = sanitizeSyncRecoveryBranchComponent(phoneModel);
+  return '$year-$month-$day-$sanitizedModel';
+}
+
+@visibleForTesting
+String nextUniqueSyncRecoveryBranchName(
+  String baseName,
+  Iterable<String> existingBranchNames,
+) {
+  var existing = existingBranchNames.toSet();
+  if (!existing.contains(baseName)) {
+    return baseName;
+  }
+
+  for (var suffix = 2;; suffix++) {
+    var candidate = '$baseName-$suffix';
+    if (!existing.contains(candidate)) {
+      return candidate;
+    }
+  }
+}
+
+class SyncRecoveryFailedException implements Exception {
+  final Exception pushException;
+  final Exception recoveryException;
+  final String suggestedBranchName;
+
+  SyncRecoveryFailedException({
+    required this.pushException,
+    required this.recoveryException,
+    required this.suggestedBranchName,
+  });
+
+  @override
+  String toString() {
+    return '$pushException\nRecovery failed: $recoveryException';
+  }
+}
 
 class GitJournalRepo with ChangeNotifier {
   final RepositoryManager repoManager;
@@ -371,9 +437,10 @@ class GitJournalRepo with ChangeNotifier {
 
       noteLoadingFuture = _loadNotes();
 
-      await _networkLock.synchronized(() async {
-        await _gitRepo.push();
-      });
+      var recovered = await _pushWithRecovery();
+      if (recovered) {
+        noteLoadingFuture = _loadNotes();
+      }
 
       Log.d("Synced!");
       attempt.add(SyncStatus.Done);
@@ -718,6 +785,59 @@ class GitJournalRepo with ChangeNotifier {
     return branches.toList()..sort();
   }
 
+  Future<String> resolveUniqueBranchName(String branchName) async {
+    return nextUniqueSyncRecoveryBranchName(branchName, await branches());
+  }
+
+  Future<String> buildDefaultSyncRecoveryBranchName({
+    DateTime? now,
+  }) async {
+    var branchName = buildSyncRecoveryBranchBaseName(
+      now ?? DateTime.now(),
+      await _deviceModelForBranchName(),
+    );
+    return resolveUniqueBranchName(branchName);
+  }
+
+  Future<String> pushCurrentStateToNewBranch(String branchName) async {
+    if (!remoteGitRepoConfigured) {
+      throw Exception('Remote Git repository not configured');
+    }
+
+    branchName = sanitizeSyncRecoveryBranchComponent(branchName);
+    if (branchName.isEmpty) {
+      branchName = await buildDefaultSyncRecoveryBranchName();
+    }
+    branchName = await resolveUniqueBranchName(branchName);
+
+    await _gitOpLock.synchronized(() async {
+      var repo = await GitAsyncRepository.load(repoPath);
+      var localBranches = await repo.branches();
+      if (!localBranches.contains(branchName)) {
+        await repo.createBranch(branchName);
+      }
+
+      var remoteConfig = repo.config.remotes.firstOrNull;
+      if (remoteConfig != null) {
+        await repo.setBranchUpstreamTo(branchName, remoteConfig, branchName);
+      }
+
+      await repo.checkoutBranch(branchName);
+      _currentBranch = branchName;
+
+      await _notesCache.clear();
+      notifyListeners();
+    });
+
+    var noteLoadingFuture = _loadNotes();
+    await _networkLock.synchronized(() async {
+      await _gitRepo.pushBranch(branchName, setUpstream: true);
+    });
+    await noteLoadingFuture;
+
+    return branchName;
+  }
+
   String? get currentBranch => _currentBranch;
 
   Future<String> checkoutBranch(String branchName) async {
@@ -802,6 +922,71 @@ class GitJournalRepo with ChangeNotifier {
     notifyListeners();
 
     _loadNotes();
+  }
+
+  Future<bool> _pushWithRecovery() async {
+    try {
+      await _networkLock.synchronized(() async {
+        await _gitRepo.push();
+      });
+      return false;
+    } catch (pushError, pushStackTrace) {
+      Log.w("Push failed, attempting recovery");
+      Log.e("GitPush Failed", ex: pushError, stacktrace: pushStackTrace);
+
+      try {
+        await _gitOpLock.synchronized(() async {
+          await _networkLock.synchronized(() async {
+            await _gitRepo.recoverPushFailure();
+          });
+        });
+
+        await _networkLock.synchronized(() async {
+          await _gitRepo.push();
+        });
+        return true;
+      } catch (recoveryError, recoveryStackTrace) {
+        Log.e(
+          "Push recovery failed",
+          ex: recoveryError,
+          stacktrace: recoveryStackTrace,
+        );
+
+        throw SyncRecoveryFailedException(
+          pushException: _asException(pushError),
+          recoveryException: _asException(recoveryError),
+          suggestedBranchName: await buildDefaultSyncRecoveryBranchName(),
+        );
+      }
+    }
+  }
+
+  Future<String> _deviceModelForBranchName() async {
+    try {
+      var deviceInfo = DeviceInfoPlugin();
+      if (Platform.isAndroid) {
+        return (await deviceInfo.androidInfo).model;
+      }
+      if (Platform.isIOS) {
+        var iosInfo = await deviceInfo.iosInfo;
+        return iosInfo.utsname.machine.isNotEmpty
+            ? iosInfo.utsname.machine
+            : iosInfo.model;
+      }
+      if (Platform.isMacOS) {
+        return (await deviceInfo.macOsInfo).model;
+      }
+      if (Platform.isLinux) {
+        return (await deviceInfo.linuxInfo).name;
+      }
+      if (Platform.isWindows) {
+        return (await deviceInfo.windowsInfo).computerName;
+      }
+    } catch (ex, st) {
+      Log.e("Failed to load device info", ex: ex, stacktrace: st);
+    }
+
+    return Platform.operatingSystem;
   }
 
   Future<bool> canResetHard() async {
