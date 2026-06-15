@@ -161,7 +161,7 @@ class GitNoteRepository {
       } catch (ex) {
         rethrow;
       }
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       await gitFetchViaExecutable(
         privateKey: config.sshPrivateKey,
         privateKeyPassword: config.sshPassword,
@@ -220,7 +220,7 @@ class GitNoteRepository {
         Log.e("GitPull Failed", ex: ex, stacktrace: stackTrace);
         rethrow;
       }
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       var repo = await GitAsyncRepository.load(gitRepoPath);
       var branchName = await repo.currentBranch();
 
@@ -264,7 +264,7 @@ class GitNoteRepository {
         Log.e("GitPush Failed", ex: ex, stacktrace: stackTrace);
         rethrow;
       }
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       return await gitPushViaExecutable(
         privateKey: config.sshPrivateKey,
         privateKeyPassword: config.sshPassword,
@@ -281,7 +281,7 @@ class GitNoteRepository {
     var remoteName = 'origin';
     if (Platform.isAndroid || Platform.isIOS) {
       return push();
-    } else if (Platform.isMacOS || Platform.isLinux) {
+    } else if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       return gitPushViaExecutable(
         privateKey: config.sshPrivateKey,
         privateKeyPassword: config.sshPassword,

@@ -439,6 +439,7 @@ class GitJournalRepo with ChangeNotifier {
 
       var recovered = await _pushWithRecovery();
       if (recovered) {
+        await noteLoadingFuture;
         noteLoadingFuture = _loadNotes();
       }
 
@@ -935,8 +936,8 @@ class GitJournalRepo with ChangeNotifier {
       Log.e("GitPush Failed", ex: pushError, stacktrace: pushStackTrace);
 
       try {
-        await _gitOpLock.synchronized(() async {
-          await _networkLock.synchronized(() async {
+        await _networkLock.synchronized(() async {
+          await _gitOpLock.synchronized(() async {
             await _gitRepo.recoverPushFailure();
           });
         });
